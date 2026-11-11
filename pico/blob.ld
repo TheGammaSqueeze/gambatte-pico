@@ -36,13 +36,16 @@ SECTIONS
 
 	.text : { *(.text .text.*) }
 	.rodata : { *(.rodata .rodata.* .gnu.linkonce.r.*) }
-	.data : { *(.data .data.*) }
 	/* C++ vtables / init: no static ctors are run (gambatte builds with
 	 * -fno-use-cxa-atexit and the core is constructed via operator new at runtime),
 	 * but keep any linkonce data the templates emit. */
 	.data.rel.ro : { *(.data.rel.ro .data.rel.ro.*) }
+	/* .data is the last section in the file, and the padding to 16 bytes is inside it, so the
+	 * flat image always holds the whole load size: padding outside a section is left out by
+	 * objcopy, and the file then ended up to 15 bytes short of the size in the header (a loader
+	 * that checks the header against the file's size rejected it). */
+	.data : { *(.data .data.*) . = ALIGN(16); }
 
-	. = ALIGN(16);
 	__blob_load_end = .;
 
 	.bss (NOLOAD) : {

@@ -79,12 +79,21 @@ The build settings are the LK's own: ARMv7-A, soft float, interworking, freestan
 exceptions, RTTI, thread safe statics or `__cxa_atexit`, plain sized enums, no unaligned
 accesses, and `__LIBRETRO__` and `VIDEO_RGB565` (gambatte draws 16 bit RGB565 pixels). The link
 takes the objects in a fixed order, then libm and libgcc from the multilib these flags select
-(`thumb/v7-a/nofp`). With the toolchain above, the blob is byte for byte the `core_gbc.blob` the LK's
-`emu/gbc/build_core.sh` and `build_core_blob.sh` built from its vendored copy of gambatte:
+(`thumb/v7-a/nofp`). With the toolchain above, the blob is the `core_gbc.blob` the LK's
+`emu/gbc/build_core.sh` and `build_core_blob.sh` built from its vendored copy of gambatte, byte for
+byte, followed by 11 zero bytes:
 
 ```
-146309 bytes, sha256 43be16ce2874b1c6c6d399f704971d3dc2516f5fef4188638a0aadf6b2987267
+146320 bytes, sha256 be1d9d54f7ac5a2ddf88dade01413cd8cdf1518c5b79d5d3a70b2cb0c1909216
+LK built: 146309 bytes, sha256 43be16ce2874b1c6c6d399f704971d3dc2516f5fef4188638a0aadf6b2987267
 ```
+
+The 11 bytes are the padding to 16 bytes at the end of the loaded part. The header's load size
+always counted them (146320), but the LK's link script placed the padding outside any section,
+where objcopy leaves it out of the file; `pico/blob.ld` puts it inside `.data`, so the file now
+holds everything the header says to load, as a loader reading it from the card checks. The header,
+the code and the data are unchanged. The first commit of this repository, with the LK's link
+script, builds the LK's file exactly.
 
 No path ends up in the blob (nothing is built with debug information, the debug sections libm and
 libgcc carry are not loaded, and nothing uses `__FILE__`), so it does not depend on where the

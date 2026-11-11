@@ -103,9 +103,7 @@ import struct, sys, hashlib
 d = open(sys.argv[1], 'rb').read()
 magic, ver, entry, load, span = struct.unpack_from('<5I', d)
 assert magic == 0x31434247 and ver == 1, "bad header"
-# the link script pads the image to 16 bytes outside any section, so objcopy leaves the padding out
-# and the file can end up to 15 bytes short of the load size in the header
-assert len(d) <= load < len(d) + 16, "load size %d, file %d" % (load, len(d))
+assert load == len(d), "load size %d != file %d" % (load, len(d))
 print("gambatte-pico.blob: %s" % sys.argv[2])
 print("  file %d bytes, span %d bytes (%.1f KiB with BSS), entry +0x%x" % (len(d), span, span / 1024.0, entry))
 print("  sha256 %s" % hashlib.sha256(d).hexdigest())
