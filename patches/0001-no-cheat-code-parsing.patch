@@ -1,0 +1,59 @@
+gambatte-pico patch to upstream gambatte (libgambatte/src/interrupter.cpp and
+libgambatte/src/mem/cartridge.cpp), GPL-2.0 like the files it changes.
+Copyright (c) 2026 TheGammaSqueeze. Applied by build.sh to a copy in out/src.
+
+The bootloader has no cheat menu, and the Game Genie and GameShark parsers are the only code in
+the core that builds and slices std::string. Those members live in libstdc++'s library, which the
+blob does not link, so the two setters keep their signatures and do nothing.
+
+diff --git a/libgambatte/src/interrupter.cpp b/libgambatte/src/interrupter.cpp
+--- a/libgambatte/src/interrupter.cpp
++++ b/libgambatte/src/interrupter.cpp
+@@ -53,22 +53,8 @@ static int asHex(char c) {
+ 	return c - '0';
+ }
+ 
+-void Interrupter::setGameShark(std::string const &codes) {
+-	std::string code;
+-
+-	for (std::size_t pos = 0; pos < codes.length(); pos += code.length() + 1) {
+-		code = codes.substr(pos, codes.find(';', pos) - pos);
+-		if (code.length() >= 8) {
+-			GsCode gs;
+-			gs.type  =  asHex(code[0]) << 4 | asHex(code[1]);
+-			gs.value = (asHex(code[2]) << 4 | asHex(code[3])) & 0xFF;
+-			gs.address = (  asHex(code[4]) << 4
+-			              | asHex(code[5])
+-			              | asHex(code[6]) << 12
+-			              | asHex(code[7]) <<  8) & 0xFFFF;
+-			gsCodes_.push_back(gs);
+-		}
+-	}
++void Interrupter::setGameShark(std::string const &) {
++	/* cheats unused in the LK build (avoids std::string library deps) */
+ }
+ 
+ void Interrupter::clearCheats() {
+diff --git a/libgambatte/src/mem/cartridge.cpp b/libgambatte/src/mem/cartridge.cpp
+--- a/libgambatte/src/mem/cartridge.cpp
++++ b/libgambatte/src/mem/cartridge.cpp
+@@ -1054,17 +1054,9 @@ namespace gambatte
+       }
+    }
+ 
+-   void Cartridge::setGameGenie(const std::string &codes)
++   void Cartridge::setGameGenie(const std::string &)
+    {
+-#if 0
+-      if (loaded())
+-#endif
+-      {
+-         std::string code;
+-         for (std::size_t pos = 0; pos < codes.length()
+-               && (code = codes.substr(pos, codes.find(';', pos) - pos), true); pos += code.length() + 1)
+-            applyGameGenie(code);
+-      }
++      /* cheats unused in the LK build (avoids std::string library deps) */
+    }
+ 
+    void Cartridge::clearCheats()
