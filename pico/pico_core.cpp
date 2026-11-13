@@ -47,6 +47,9 @@ void     gbc_set_dmg_palette_color(unsigned pal, unsigned col, unsigned rgb32);
 void     gbc_set_color_correction(int enable);
 void     gbc_set_color_correction_mode(unsigned mode);
 void     gbc_set_dark_filter(unsigned level);
+int      gbc_has_accelerometer(void);
+int      gbc_rumble(void);
+void     gbc_set_accelerometer(unsigned x, unsigned y);
 }
 
 static const struct gbc_core_imports *s_imp;
@@ -128,6 +131,24 @@ extern "C" int gbc_dmg_palette_apply_auto(const char *title)
 	return (int)di;
 }
 
+/* ---- motion: the console's accelerometer as an MBC7 cartridge's sensor ----
+ * The sensor sits flat in the cartridge, behind the screen, so it reads the console's
+ * acceleration across the screen (X) and along it (Y), gravity included: 0x81d0 on an axis
+ * that is level, about 0x70 for each g along it, X rising as the right side goes down and Y as
+ * the top edge comes up (as Kirby Tilt 'n' Tumble rolls). The LK's readings are 2048 to a g. */
+enum { MBC7_LEVEL = 0x81d0, MBC7_PER_G = 0x70, HOST_PER_G = 2048 };
+static unsigned mbc7_axis(int v)
+{
+	long r = MBC7_LEVEL + (long)v * MBC7_PER_G / HOST_PER_G;
+	return r < 0 ? 0 : r > 0xffff ? 0xffff : (unsigned)r;
+}
+extern "C" int gbc_motion_wanted(void) { return gbc_has_accelerometer(); }
+extern "C" void gbc_set_motion(int x, int y, int z)
+{
+	(void)z;   /* the cartridge's sensor has no third axis */
+	gbc_set_accelerometer(mbc7_axis(x), mbc7_axis(-y));
+}
+
 /* ---- outward-call forwarders the bundled core references ---- */
 extern "C" unsigned gbc_read_buttons(void)      /* gambatte LkInput -> LK pad reader */
 {
@@ -143,7 +164,7 @@ extern "C" int atexit(void (*)(void)) { return 0; }   /* no teardown in the blob
 
 static const struct gbc_core_exports g_exports = {
 	GBC_CORE_ABI_MAGIC,
-	GBC_CORE_ABI_VERSION,
+	GBC_CORE_ABI_V2,
 	gbc_heap_init,
 	gbc_create,
 	gbc_load,
@@ -165,6 +186,9 @@ static const struct gbc_core_exports g_exports = {
 	gbc_dmg_palette_apply,
 	gbc_dmg_palette_default,
 	gbc_dmg_palette_apply_auto,
+	gbc_motion_wanted,
+	gbc_set_motion,
+	gbc_rumble,
 };
 
 /* Blob entry: LK calls this with the imports table and gets the export table back. */

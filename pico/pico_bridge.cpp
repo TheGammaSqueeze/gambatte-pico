@@ -37,15 +37,19 @@ extern "C" int gbc_create(void)
 
 /* Load a ROM image from a memory buffer. flags=0 auto-detects CGB; pass
  * gambatte::GB::FORCE_DMG (1) to force original Game Boy (DMG) mode for .gb ROMs. */
+extern "C" void gbc_rumble_clear(void);   /* pico_runtime.cpp */
+
 extern "C" int gbc_load(const void *rom, unsigned size, unsigned flags)
 {
 	if (!g_gb)
 		return -1;
+	gbc_rumble_clear();   /* a new cartridge starts with its motor still */
 	return g_gb->load(rom, size, flags);
 }
 
 extern "C" void gbc_reset(void)
 {
+	gbc_rumble_clear();
 	if (g_gb)
 		g_gb->reset();
 }
@@ -55,6 +59,14 @@ extern "C" void *gbc_savedata_ptr(void) { return g_gb ? g_gb->savedata_ptr() : 0
 extern "C" unsigned gbc_savedata_size(void) { return g_gb ? g_gb->savedata_size() : 0; }
 extern "C" void *gbc_rtcdata_ptr(void) { return g_gb ? g_gb->rtcdata_ptr() : 0; }
 extern "C" unsigned gbc_rtcdata_size(void) { return g_gb ? g_gb->rtcdata_size() : 0; }
+
+/* ---- MBC7 tilt cartridges: whether the cartridge has the sensor, and its reading ---- */
+extern "C" int gbc_has_accelerometer(void) { return g_gb && g_gb->hasAccelerometer(); }
+extern "C" void gbc_set_accelerometer(unsigned x, unsigned y)
+{
+	if (g_gb)
+		g_gb->setAccelerometer(x, y);
+}
 
 /* ---- CGB colour / palette knobs (menu-driven) ---- */
 extern "C" void gbc_set_color_correction(int enable)
@@ -93,6 +105,7 @@ extern "C" void gbc_save_state(void *buf)
 }
 extern "C" int gbc_load_state(const void *buf, unsigned size)
 {
+	gbc_rumble_clear();   /* states do not carry the motor bit; the game sets it again */
 	return (g_gb && g_gb->loadState(buf, size)) ? 0 : -1;
 }
 

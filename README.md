@@ -46,7 +46,7 @@ from is that source.
 | --- | --- |
 | `upstream/` | gambatte-libretro, as a git submodule at the commit the LK's copy was taken from, never modified in place |
 | `patches/` | changes to upstream, applied by `build.sh` to a copy in `out/src` |
-| `pico/pico_core.cpp` | the LK's core interface (`gbc_core_abi.h`, version 1) filled in for gambatte: the export table, the blob's entry point, the palette catalogue |
+| `pico/pico_core.cpp` | the LK's core interface (`gbc_core_abi.h`, export table version 2) filled in for gambatte: the export table, the blob's entry point, the palette catalogue |
 | `pico/pico_bridge.cpp` | `extern "C"` functions over gambatte's `GB` class, so only the C ABI crosses into the LK |
 | `pico/pico_runtime.cpp` | the C++ runtime: `operator new` over the LK's heap, the libstdc++ error hooks, empty logging and rumble |
 | `pico/pico_libc.c` | `memcpy`, `memmove`, `memset`, `strcmp` and `errno` for libm |
@@ -60,6 +60,7 @@ from is that source.
 | Patch | Why |
 | --- | --- |
 | `0001-no-cheat-code-parsing.patch` | `Interrupter::setGameShark` and `Cartridge::setGameGenie` keep their signatures and do nothing. The bootloader has no cheat menu, and the two code parsers are the only code in the core that builds and slices `std::string`, whose members (`substr`, `find`, `_M_dispose`, `_S_copy`) live in libstdc++'s library, which the blob does not link. Without this patch the link fails on exactly those four symbols. |
+| `0002-mbc7-tilt-cartridges.patch` | MBC7 cartridges (Kirby Tilt 'n' Tumble, Command Master) load instead of being refused. The new `mem/mbc7.cpp` is the cartridge's register window at A000-AFFF: the two axis accelerometer with its latch, and the 93LC56 serial EEPROM (128 words, Microwire), which is the battery save (256 bytes). It is reached through the path an RTC's registers use, its state goes into save states under two new labels that older states simply lack, and `GB::hasAccelerometer` / `GB::setAccelerometer` let the frontend feed the sensor. |
 
 ## Building
 
@@ -79,9 +80,10 @@ The build settings are the LK's own: ARMv7-A, soft float, interworking, freestan
 exceptions, RTTI, thread safe statics or `__cxa_atexit`, plain sized enums, no unaligned
 accesses, and `__LIBRETRO__` and `VIDEO_RGB565` (gambatte draws 16 bit RGB565 pixels). The link
 takes the objects in a fixed order, then libm and libgcc from the multilib these flags select
-(`thumb/v7-a/nofp`). With the toolchain above, the blob is the `core_gbc.blob` the LK's
-`emu/gbc/build_core.sh` and `build_core_blob.sh` built from its vendored copy of gambatte, byte for
-byte, followed by 11 zero bytes:
+(`thumb/v7-a/nofp`). With the toolchain above and only the first patch (this repository up to
+37571c0), the blob is the `core_gbc.blob` the LK's `emu/gbc/build_core.sh` and
+`build_core_blob.sh` built from its vendored copy of gambatte, byte for byte, followed by 11 zero
+bytes:
 
 ```
 146320 bytes, sha256 be1d9d54f7ac5a2ddf88dade01413cd8cdf1518c5b79d5d3a70b2cb0c1909216
@@ -124,7 +126,12 @@ Copy `out/gambatte-pico.blob` to the SD card as `/cores/gambatte-pico.blob`.
   (`savedata_*`, `rtcdata_*`); save states, run ahead and rewind use `state_size`, `state_save`
   and `state_load` on buffers the LK owns.
 - The Pico menu's palette list, Auto palette, colour correction and dark filter go through the
-  remaining exports.
+  palette exports.
+- Tilt cartridges (MBC7): while `motion_wanted` says the cartridge has a sensor, the driver passes
+  the console's accelerometer once a frame (`set_motion`, export table version 2, 2048 to a g,
+  smoothed with a dead zone on its fast part so handling the console does not read as a flick).
+  `pico/pico_core.cpp` turns it into the cartridge sensor's scale: 0x81d0 level, about 0x70 for a
+  g, X rising as the right side goes down and Y as the top edge comes up.
 
 ## Target notes for maintainers
 

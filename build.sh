@@ -58,7 +58,7 @@ CFLAGS="$ARCH -fno-builtin -fno-common -fno-short-enums -Os"
 # gambatte's emulator library (upstream libgambatte/src)
 SRCS="bootloader cpu gambatte initstate interrupter interruptrequester
 	gambatte-memory sound statesaver tima video video_libretro
-	mem/cartridge mem/cartridge_libretro mem/huc3 mem/memptrs mem/rtc
+	mem/cartridge mem/cartridge_libretro mem/huc3 mem/mbc7 mem/memptrs mem/rtc
 	sound/channel1 sound/channel2 sound/channel3 sound/channel4
 	sound/duty_unit sound/envelope_unit sound/length_counter
 	video/ly_counter video/lyc_irq video/next_m0_time video/ppu
@@ -79,7 +79,7 @@ $CC $CFLAGS -I"$ROOT/pico" -Wall -c "$ROOT/pico/pico_libc.c" -o "$OUT/obj/pico_l
 # no longer comparable byte for byte).
 LINK="core_bootloader core_cpu core_gambatte-memory core_gambatte pico_libc pico_core
 	pico_runtime pico_bridge core_initstate core_interrupter core_interruptrequester
-	core_mem_cartridge core_mem_cartridge_libretro core_mem_huc3 core_mem_memptrs core_mem_rtc
+	core_mem_cartridge core_mem_cartridge_libretro core_mem_huc3 core_mem_mbc7 core_mem_memptrs core_mem_rtc
 	core_sound core_sound_channel1 core_sound_channel2 core_sound_channel3 core_sound_channel4
 	core_sound_duty_unit core_sound_envelope_unit core_sound_length_counter core_statesaver
 	core_tima core_video core_video_libretro core_video_ly_counter core_video_lyc_irq

@@ -62,8 +62,12 @@ void gambatte_log(int, const char *, ...) {}
 
 }
 
-/* rumble callback the cartridge code calls (C++ symbol) - no rumble in LK */
-void cartridge_set_rumble(unsigned) {}
+/* the rumble callback gambatte's MBC5 calls when a rumble cartridge sets or clears its motor bit;
+ * the LK reads it once a frame (gbc_rumble) and drives the console's motor */
+static unsigned s_rumble;
+void cartridge_set_rumble(unsigned on) { s_rumble = on; }
+extern "C" int gbc_rumble(void) { return s_rumble != 0; }
+extern "C" void gbc_rumble_clear(void) { s_rumble = 0; }
 
 namespace std {
 /* STL containers call these on error paths; with -fno-exceptions they must not

@@ -1,0 +1,640 @@
+gambatte-pico patch to upstream gambatte (libgambatte/include/gambatte.h, libgambatte/src/
+gambatte.cpp, gambatte-memory.cpp, gambatte-memory.h, initstate.cpp, savestate.h, statesaver.cpp,
+mem/cartridge.cpp, mem/cartridge.h, mem/cartridge_libretro.cpp, and the new mem/mbc7.cpp and
+mem/mbc7.h), GPL-2.0 like the files it changes. Copyright (c) 2026 TheGammaSqueeze. Applied by
+build.sh to a copy in out/src.
+
+MBC7 cartridges (Kirby Tilt 'n' Tumble, Command Master) load instead of being refused. The
+mapper banks ROM like MBC5 with a seven bit number; A000-AFFF is a window onto the cartridge's
+two axis accelerometer and its 93LC56 serial EEPROM, reached through the same path as an RTC's
+registers. The EEPROM is the battery save (256 bytes), and the chip goes into save states under
+two new labels, which older states simply lack. GB::setAccelerometer gives the core the sensor's
+reading; GB::hasAccelerometer tells the frontend when to feed it.
+
+diff -ruN a/libgambatte/include/gambatte.h b/libgambatte/include/gambatte.h
+--- a/libgambatte/include/gambatte.h
++++ b/libgambatte/include/gambatte.h
+@@ -104,6 +104,13 @@
+    unsigned savedata_size();
+    void *rtcdata_ptr();
+    unsigned rtcdata_size();
++
++	/** True when the loaded cartridge is an MBC7 one, with an accelerometer (the tilt carts). */
++	bool hasAccelerometer() const;
++
++	/** The accelerometer's reading, X then Y, as the cartridge's sensor gives it: 0x81d0 on
++	  * both axes when level, moving by about 0x70 for a g. The game latches it when it asks. */
++	void setAccelerometer(unsigned x, unsigned y);
+ 	
+ 	/** Returns true if the currently loaded ROM image is treated as having CGB support. */
+ 	bool isCgb() const;
+diff -ruN a/libgambatte/src/gambatte-memory.cpp b/libgambatte/src/gambatte-memory.cpp
+--- a/libgambatte/src/gambatte-memory.cpp
++++ b/libgambatte/src/gambatte-memory.cpp
+@@ -477,6 +477,7 @@
+ 				startOamDma(lastOamDmaUpdate_ - 1);
+ 
+ 			if (oamDmaSrc) ioamhram_[oamDmaPos_] = oamDmaSrc[oamDmaPos_];
++			else if (cart_.isMbc7()) ioamhram_[oamDmaPos_] = cart_.mbc7Read(ioamhram_[0x146] << 8 | oamDmaPos_);
+ 			else if (cart_.isHuC3()) ioamhram_[oamDmaPos_] = cart_.HuC3Read(oamDmaPos_, cc);
+ 			else ioamhram_[oamDmaPos_] = cart_.rtcRead();
+ 
+@@ -647,6 +648,9 @@
+ 			if (cart_.rsrambankptr())
+ 				return cart_.rsrambankptr()[p];
+ 
++			if (cart_.isMbc7())
++				return cart_.mbc7Read(p);
++
+ 			if (cart_.isHuC3())
+ 				return cart_.HuC3Read(p, cc);
+ 
+@@ -1157,6 +1161,8 @@
+ 		} else if (p < 0xC000) {
+ 			if (cart_.wsrambankptr())
+ 				cart_.wsrambankptr()[p] = data;
++			else if (cart_.isMbc7())
++				cart_.mbc7Write(p, data);
+ 			else if (cart_.isHuC3())
+ 				cart_.HuC3Write(p, data);
+ 			else
+diff -ruN a/libgambatte/src/gambatte-memory.h b/libgambatte/src/gambatte-memory.h
+--- a/libgambatte/src/gambatte-memory.h
++++ b/libgambatte/src/gambatte-memory.h
+@@ -44,6 +44,8 @@
+ 	void loadState(SaveState const &state);
+ #ifdef __LIBRETRO__
+    void *savedata_ptr() { return cart_.savedata_ptr(); }
++   bool hasAccelerometer() const { return cart_.isMbc7(); }
++   void setAccelerometer(unsigned x, unsigned y) { cart_.setAccelerometer(x, y); }
+    unsigned savedata_size() { return cart_.savedata_size(); }
+    void *rtcdata_ptr() { return cart_.rtcdata_ptr(); }
+    unsigned rtcdata_size() { return cart_.rtcdata_size(); }
+diff -ruN a/libgambatte/src/gambatte.cpp b/libgambatte/src/gambatte.cpp
+--- a/libgambatte/src/gambatte.cpp
++++ b/libgambatte/src/gambatte.cpp
+@@ -110,6 +110,8 @@
+ #endif
+ 
+ void *GB::savedata_ptr() { return p_->cpu.savedata_ptr(); }
++bool GB::hasAccelerometer() const { return p_->cpu.mem_.hasAccelerometer(); }
++void GB::setAccelerometer(unsigned x, unsigned y) { p_->cpu.mem_.setAccelerometer(x, y); }
+ unsigned GB::savedata_size() { return p_->cpu.savedata_size(); }
+ void *GB::rtcdata_ptr() { return p_->cpu.rtcdata_ptr(); }
+ unsigned GB::rtcdata_size() { return p_->cpu.rtcdata_size(); }
+diff -ruN a/libgambatte/src/initstate.cpp b/libgambatte/src/initstate.cpp
+--- a/libgambatte/src/initstate.cpp
++++ b/libgambatte/src/initstate.cpp
+@@ -1355,4 +1355,6 @@
+ 	state.huc3.ramValue = 1;
+ 	state.huc3.modeflag = 2; // huc3_none
+ 	state.huc3.irReceivingPulse = false;
++
++	state.mbc7.present = SaveState::MBC7::power_on;
+ }
+diff -ruN a/libgambatte/src/mem/cartridge.cpp b/libgambatte/src/mem/cartridge.cpp
+--- a/libgambatte/src/mem/cartridge.cpp
++++ b/libgambatte/src/mem/cartridge.cpp
+@@ -725,6 +725,51 @@
+       }
+    };
+ 
++   /* MBC7: a seven bit ROM bank number at 2000-3FFF and the two enables of the chip's register
++    * window (Mbc7Chip) at 0000-1FFF and 4000-5FFF. The cartridge has no RAM: A000-BFFF is kept
++    * off the memory pointers (as an RTC's registers are) so every access reaches the chip. */
++   class Mbc7 : public DefaultMbc {
++      MemPtrs &memptrs;
++      Mbc7Chip *const chip;
++      unsigned char rombank;
++      void setRombank() const { memptrs.setRombank(rombank & (rombanks(memptrs) - 1)); }
++      void setRegisterWindow() const {
++         memptrs.setRambank(MemPtrs::READ_EN | MemPtrs::WRITE_EN | MemPtrs::RTC_EN, 0);
++      }
++      public:
++      Mbc7(MemPtrs &memptrs, Mbc7Chip *chip)
++         : memptrs(memptrs),
++         chip(chip),
++         rombank(1)
++      {
++         setRegisterWindow();
++      }
++      virtual void romWrite(const unsigned P, const unsigned data) {
++         switch (P >> 13 & 3) {
++            case 0:
++               chip->setEnable(0, (data & 0xF) == 0xA);
++               break;
++            case 1:
++               rombank = data & 0x7F;
++               setRombank();
++               break;
++            case 2:
++               chip->setEnable(1, data == 0x40);
++               break;
++            default:
++               break;
++         }
++      }
++      virtual void saveState(SaveState::Mem &ss) const {
++         ss.rombank = rombank;
++      }
++      virtual void loadState(const SaveState::Mem &ss) {
++         rombank = ss.rombank & 0x7F;
++         setRombank();
++         setRegisterWindow();
++      }
++   };
++
+    static bool hasRtc(unsigned headerByte0x147)
+    {
+       switch (headerByte0x147)
+@@ -750,11 +795,13 @@
+       mbc->saveState(state.mem);
+       rtc_.saveState(state);
+       huc3_.saveState(state);
++      mbc7_.saveState(state);
+    }
+ 
+    void Cartridge::loadState(const SaveState &state)
+    {
+       huc3_.loadState(state);
++      mbc7_.loadState(state);
+       rtc_.loadState(state);
+       mbc->loadState(state.mem);
+    }
+@@ -845,7 +892,7 @@
+       unsigned rambanks = 1;
+       unsigned rombanks = 2;
+       bool cgb = false;
+-      enum Cartridgetype { PLAIN, MBC1, MBC2, MBC3, MBC5, HUC1, HUC3, SACHEN_MMC1 } type = PLAIN;
++      enum Cartridgetype { PLAIN, MBC1, MBC2, MBC3, MBC5, MBC7, HUC1, HUC3, SACHEN_MMC1 } type = PLAIN;
+       bool rumble = false;
+ 
+       isSachen_ = detectSachenMmc1(romdata, romsize);
+@@ -902,7 +949,7 @@
+             case 0x1D: gambatte_log(RETRO_LOG_INFO, "MBC5+RUMBLE+RAM ROM loaded.\n"); type = MBC5; rumble = true; break;
+             case 0x1E: gambatte_log(RETRO_LOG_INFO, "MBC5+RUMBLE+RAM+BATTERY ROM loaded.\n"); type = MBC5; rumble = true; break;
+             case 0x20: gambatte_log(RETRO_LOG_INFO, "MBC6 ROM not supported.\n"); return -1;
+-            case 0x22: gambatte_log(RETRO_LOG_INFO, "MBC7 ROM not supported.\n"); return -1;
++            case 0x22: gambatte_log(RETRO_LOG_INFO, "MBC7 ROM+ACCELEROMETER+EEPROM loaded.\n"); type = MBC7; break;
+ 	     case 0xEA: type = MBC1; break; // Hack to accept 0xEA as a MBC1 (Sonic 3D Blast 5)
+             case 0xFC: gambatte_log(RETRO_LOG_INFO, "Pocket Camera ROM not supported.\n"); return -1;
+             case 0xFD: gambatte_log(RETRO_LOG_INFO, "Bandai TAMA5 ROM not supported.\n"); return -1;
+@@ -937,6 +984,9 @@
+           * useless save memory. */
+          if (type == SACHEN_MMC1)
+             rambanks = 0;
++         /* MBC7 keeps its save in the chip's EEPROM, not in RAM banks */
++         if (type == MBC7)
++            rambanks = 0;
+ 
+          switch(forceModel){
+             case 1://FORCE_DMG
+@@ -966,6 +1016,7 @@
+       memptrs_.reset(rombanks, rambanks, cgb ? 8 : 2);
+       rtc_.set(false, 0);
+       huc3_.set(false);
++      mbc7_.set(type == MBC7);
+ 
+       memcpy(memptrs_.romdata(), romdata, ((romsize / 0x4000) * 0x4000ul) * sizeof(unsigned char));
+       std::memset(memptrs_.romdata() + (romsize / 0x4000) * 0x4000ul, 0xFF, (rombanks - romsize / 0x4000) * 0x4000ul);
+@@ -1005,6 +1056,7 @@
+          case MBC2: mbc.reset(new Mbc2(memptrs_)); break;
+          case MBC3: mbc.reset(new Mbc3(memptrs_, hasRtc(memptrs_.romdata()[0x147]) ? &rtc_ : 0)); break;
+          case MBC5: mbc.reset(new Mbc5(memptrs_, rumble)); break;
++         case MBC7: mbc.reset(new Mbc7(memptrs_, &mbc7_)); break;
+          case HUC1: mbc.reset(new HuC1(memptrs_)); break;
+          case HUC3:
+             huc3_.set(true);
+diff -ruN a/libgambatte/src/mem/cartridge.h b/libgambatte/src/mem/cartridge.h
+--- a/libgambatte/src/mem/cartridge.h
++++ b/libgambatte/src/mem/cartridge.h
+@@ -22,6 +22,7 @@
+ #include "memptrs.h"
+ #include "rtc.h"
+ #include "huc3.h"
++#include "mbc7.h"
+ #include "savestate.h"
+ #include <memory>
+ #include <string>
+@@ -153,6 +154,12 @@
+          unsigned char HuC3Read(unsigned p, unsigned long const cc) { return huc3_.read(p, cc); }
+          void HuC3Write(unsigned p, unsigned data) { huc3_.write(p, data); }
+ 
++         /* MBC7 (tilt carts): A000-BFFF is the chip's register window, not RAM */
++         bool isMbc7() const { return mbc7_.active(); }
++         unsigned char mbc7Read(unsigned p) const { return mbc7_.read(p); }
++         void mbc7Write(unsigned p, unsigned data) { mbc7_.write(p, data); }
++         void setAccelerometer(unsigned x, unsigned y) { mbc7_.setAccel(x, y); }
++
+          /* Sachen MMC1 (unlicensed mapper used by Sachen 4-in-1 etc.):
+           * the cartridge header is bit-scrambled and a "locked" boot
+           * state requires hooks outside the normal MBC write path.
+@@ -205,6 +212,7 @@
+          MemPtrs memptrs_;
+          Rtc rtc_;
+          HuC3Chip huc3_;
++         Mbc7Chip mbc7_;
+          /* True only when the loaded ROM was identified as a Sachen
+           * MMC1 unlicensed cart via the scrambled-logo checksum check
+           * in loadROM. Used to route bootloader/VRAM hooks. */
+diff -ruN a/libgambatte/src/mem/cartridge_libretro.cpp b/libgambatte/src/mem/cartridge_libretro.cpp
+--- a/libgambatte/src/mem/cartridge_libretro.cpp
++++ b/libgambatte/src/mem/cartridge_libretro.cpp
+@@ -19,6 +19,7 @@
+          case 0x13:
+          case 0x1B:
+          case 0x1E:
++         case 0x22:
+          case 0xFE:
+          case 0xFF:
+             return true;
+@@ -48,6 +49,8 @@
+        * we never hand the frontend a bogus save pointer. */
+       if (isSachen_)
+          return 0;
++      if (isMbc7())
++         return mbc7_.eeprom();
+       // Check ROM header for battery.
+       if (hasBattery(memptrs_.romdata()[0x147]))
+          return memptrs_.rambankdata();
+@@ -58,6 +61,8 @@
+    {
+       if (isSachen_)
+          return 0;
++      if (isMbc7())
++         return Mbc7Chip::eeprom_bytes;
+       if (hasBattery(memptrs_.romdata()[0x147]))
+          return memptrs_.rambankdataend() - memptrs_.rambankdata();
+       return 0;
+diff -ruN a/libgambatte/src/mem/mbc7.cpp b/libgambatte/src/mem/mbc7.cpp
+--- a/libgambatte/src/mem/mbc7.cpp
++++ b/libgambatte/src/mem/mbc7.cpp
+@@ -0,0 +1,268 @@
++// SPDX-License-Identifier: GPL-2.0-only
++// Copyright (c) 2026 TheGammaSqueeze
++/*
++ * mbc7.cpp - the MBC7 cartridge's accelerometer and serial EEPROM (see mbc7.h).
++ *
++ * Register window (A000-AFFF, register = address bits 4 to 7):
++ *   0  write 0x55: clear the latched reading to 0x8000 and arm the latch
++ *   1  write 0xaa: once armed, copy the sensor's reading into the latch
++ *   2 3  latched X, low then high byte
++ *   4 5  latched Y, low then high byte
++ *   6  0x00, 7  0xff (no third axis)
++ *   8  the EEPROM's pins: bit 7 chip select, bit 6 clock, bit 1 data in, bit 0 data out
++ *   9-F  0xff
++ *
++ * The EEPROM speaks Microwire, a bit on each rising clock while selected: a start bit, a two bit
++ * opcode and eight address bits (the top one unused for 128 words), then:
++ *   10 READ   a 0, then the word, top bit first, and the words after it while the clock runs
++ *   01 WRITE  sixteen data bits, stored once writes are enabled
++ *   11 ERASE  the word becomes 0xffff
++ *   00 with the address's top two bits: 11 enable writes, 00 disable them, 10 erase all,
++ *      01 write all (sixteen data bits for every word)
++ * Programming takes no time here: data out reads 1 (ready) whenever no word is being sent.
++ */
++#include "mbc7.h"
++#include "../savestate.h"
++#include <cstring>
++
++namespace gambatte {
++
++static_assert(sizeof(SaveState::MBC7().data) == Mbc7Chip::state_bytes, "the state blob holds the registers and the EEPROM");
++
++Mbc7Chip::Mbc7Chip()
++: accelX_(accel_level), accelY_(accel_level), active_(false)
++{
++	std::memset(eeprom_, 0xff, sizeof eeprom_);
++	resetRegisters();
++}
++
++void Mbc7Chip::resetRegisters()
++{
++	latchX_ = latchY_ = 0x8000;
++	shift_ = outWord_ = 0;
++	eeState_ = ee_idle;
++	bits_ = addr_ = outBits_ = 0;
++	enable_[0] = enable_[1] = false;
++	armed_ = false;
++	cs_ = clk_ = di_ = false;
++	do_ = true;
++	writeEnable_ = false;
++}
++
++void Mbc7Chip::set(bool active)
++{
++	active_ = active;
++	std::memset(eeprom_, 0xff, sizeof eeprom_);
++	accelX_ = accelY_ = accel_level;
++	resetRegisters();
++}
++
++void Mbc7Chip::setEnable(unsigned which, bool on)
++{
++	enable_[which & 1] = on;
++}
++
++unsigned char Mbc7Chip::read(unsigned p) const
++{
++	if (!enable_[0] || !enable_[1] || p >= 0xb000)
++		return 0xff;
++
++	switch (p >> 4 & 0xf) {
++	case 2: return latchX_ & 0xff;
++	case 3: return latchX_ >> 8;
++	case 4: return latchY_ & 0xff;
++	case 5: return latchY_ >> 8;
++	case 6: return 0x00;
++	case 8: return (cs_ ? 0x80 : 0) | (clk_ ? 0x40 : 0) | (di_ ? 0x02 : 0) | (do_ ? 0x01 : 0);
++	default: return 0xff;
++	}
++}
++
++void Mbc7Chip::write(unsigned p, unsigned data)
++{
++	if (!enable_[0] || !enable_[1] || p >= 0xb000)
++		return;
++
++	switch (p >> 4 & 0xf) {
++	case 0:
++		if (data == 0x55) {
++			latchX_ = latchY_ = 0x8000;
++			armed_ = true;
++		}
++		break;
++	case 1:
++		if (data == 0xaa && armed_) {
++			latchX_ = accelX_;
++			latchY_ = accelY_;
++			armed_ = false;
++		}
++		break;
++	case 8:
++		eepromPins(data);
++		break;
++	}
++}
++
++void Mbc7Chip::eepromPins(unsigned data)
++{
++	bool const cs = data & 0x80, clk = data & 0x40, di = data & 0x02;
++
++	if (!cs) {
++		/* deselected: whatever command was under way ends, a write short of its sixteen bits
++		 * is dropped */
++		eeState_ = ee_idle;
++		do_ = true;
++	} else if (!cs_) {
++		eeState_ = ee_idle;   /* newly selected: the next 1 clocked in is a start bit */
++		bits_ = 0;
++	}
++	if (cs && clk && !clk_)
++		eepromClock(di);
++
++	cs_ = cs;
++	clk_ = clk;
++	di_ = di;
++}
++
++void Mbc7Chip::eepromClock(bool di)
++{
++	switch (eeState_) {
++	case ee_idle:
++		if (di) {
++			eeState_ = ee_command;
++			shift_ = 0;
++			bits_ = 0;
++		}
++		break;
++	case ee_command:
++		shift_ = shift_ << 1 | di;
++		if (++bits_ == 10)
++			eepromCommand();
++		break;
++	case ee_read:
++		do_ = outWord_ >> 15 & 1;
++		outWord_ <<= 1;
++		if (++outBits_ == 16) {
++			/* sequential read: the next word follows with no dummy bit */
++			addr_ = (addr_ + 1) & 0x7f;
++			outWord_ = word(addr_);
++			outBits_ = 0;
++		}
++		break;
++	case ee_write:
++	case ee_write_all:
++		shift_ = shift_ << 1 | di;
++		if (++bits_ == 16) {
++			if (writeEnable_) {
++				if (eeState_ == ee_write)
++					setWord(addr_, shift_);
++				else
++					for (unsigned a = 0; a < eeprom_bytes / 2; ++a)
++						setWord(a, shift_);
++			}
++			eeState_ = ee_done;
++			do_ = true;
++		}
++		break;
++	default:
++		break;
++	}
++}
++
++void Mbc7Chip::eepromCommand()
++{
++	unsigned const op = shift_ >> 8 & 3, a = shift_ & 0xff;
++
++	shift_ = 0;
++	bits_ = 0;
++	eeState_ = ee_done;
++	do_ = true;
++	switch (op) {
++	case 2:   /* READ: a dummy 0 first */
++		addr_ = a & 0x7f;
++		outWord_ = word(addr_);
++		outBits_ = 0;
++		do_ = false;
++		eeState_ = ee_read;
++		break;
++	case 1:   /* WRITE */
++		addr_ = a & 0x7f;
++		eeState_ = ee_write;
++		break;
++	case 3:   /* ERASE */
++		if (writeEnable_)
++			setWord(a & 0x7f, 0xffff);
++		break;
++	default:
++		switch (a >> 6 & 3) {
++		case 0: writeEnable_ = false; break;
++		case 1: eeState_ = ee_write_all; break;
++		case 2:
++			if (writeEnable_)
++				std::memset(eeprom_, 0xff, sizeof eeprom_);
++			break;
++		case 3: writeEnable_ = true; break;
++		}
++		break;
++	}
++}
++
++/* the state blob: sixteen bytes of registers, then the EEPROM */
++void Mbc7Chip::saveState(SaveState &state) const
++{
++	unsigned char *const s = state.mbc7.data;
++
++	std::memset(s, 0, 16);
++	s[0] = (enable_[0] ? 0x01 : 0) | (enable_[1] ? 0x02 : 0) | (armed_ ? 0x04 : 0)
++		| (cs_ ? 0x08 : 0) | (clk_ ? 0x10 : 0) | (di_ ? 0x20 : 0) | (do_ ? 0x40 : 0)
++		| (writeEnable_ ? 0x80 : 0);
++	s[1] = eeState_;
++	s[2] = bits_;
++	s[3] = addr_;
++	s[4] = shift_ & 0xff;
++	s[5] = shift_ >> 8;
++	s[6] = outWord_ & 0xff;
++	s[7] = outWord_ >> 8;
++	s[8] = outBits_;
++	s[9] = latchX_ & 0xff;
++	s[10] = latchX_ >> 8;
++	s[11] = latchY_ & 0xff;
++	s[12] = latchY_ >> 8;
++	std::memcpy(s + 16, eeprom_, sizeof eeprom_);
++	state.mbc7.present = active_ ? SaveState::MBC7::full : SaveState::MBC7::absent;
++}
++
++void Mbc7Chip::loadState(SaveState const &state)
++{
++	unsigned char const *const s = state.mbc7.data;
++
++	if (!active_)
++		return;
++	if (state.mbc7.present == SaveState::MBC7::power_on) {
++		/* a reset: the battery keeps the EEPROM */
++		resetRegisters();
++		return;
++	}
++	if (state.mbc7.present != SaveState::MBC7::full)
++		return;   /* a state from before MBC7 support: leave the chip as it is */
++
++	enable_[0] = s[0] & 0x01;
++	enable_[1] = s[0] & 0x02;
++	armed_ = s[0] & 0x04;
++	cs_ = s[0] & 0x08;
++	clk_ = s[0] & 0x10;
++	di_ = s[0] & 0x20;
++	do_ = s[0] & 0x40;
++	writeEnable_ = s[0] & 0x80;
++	eeState_ = s[1] <= ee_done ? s[1] : ee_idle;
++	bits_ = s[2];
++	addr_ = s[3] & 0x7f;
++	shift_ = s[4] | s[5] << 8;
++	outWord_ = s[6] | s[7] << 8;
++	outBits_ = s[8];
++	latchX_ = s[9] | s[10] << 8;
++	latchY_ = s[11] | s[12] << 8;
++	std::memcpy(eeprom_, s + 16, sizeof eeprom_);
++}
++
++}
+diff -ruN a/libgambatte/src/mem/mbc7.h b/libgambatte/src/mem/mbc7.h
+--- a/libgambatte/src/mem/mbc7.h
++++ b/libgambatte/src/mem/mbc7.h
+@@ -0,0 +1,65 @@
++// SPDX-License-Identifier: GPL-2.0-only
++// Copyright (c) 2026 TheGammaSqueeze
++/*
++ * mbc7.h - what an MBC7 cartridge keeps behind A000-BFFF: a two axis accelerometer and a
++ * 93LC56 serial EEPROM (128 words of 16 bits), the battery save of the tilt carts (Kirby Tilt 'n'
++ * Tumble, Command Master). There is no RAM there: A000-AFFF is a window of registers, picked
++ * by address bits 4 to 7, open only while both enables are set; B000-BFFF reads 0xff.
++ */
++#ifndef GAMBATTE_MBC7_H
++#define GAMBATTE_MBC7_H
++
++namespace gambatte {
++
++struct SaveState;
++
++class Mbc7Chip {
++public:
++	enum { eeprom_bytes = 256, state_bytes = 16 + eeprom_bytes };
++	/* a level sensor reads this on both axes */
++	enum { accel_level = 0x81d0 };
++
++	Mbc7Chip();
++	/* on for an MBC7 cartridge: registers back to power on, the EEPROM erased (the frontend
++	 * then loads the battery save over it); off for any other cartridge */
++	void set(bool active);
++	bool active() const { return active_; }
++
++	/* 0000-1FFF (0x0a) and 4000-5FFF (0x40) each hold one of the two enables */
++	void setEnable(unsigned which, bool on);
++	unsigned char read(unsigned p) const;
++	void write(unsigned p, unsigned data);
++
++	/* the sensor's present reading, which the cartridge copies out when the game latches it */
++	void setAccel(unsigned x, unsigned y) { accelX_ = x & 0xffff; accelY_ = y & 0xffff; }
++
++	unsigned char *eeprom() { return eeprom_; }
++
++	void saveState(SaveState &state) const;
++	void loadState(SaveState const &state);
++
++private:
++	/* where the EEPROM is in a command: waiting for the start bit, taking the opcode and
++	 * address, sending a word out, taking a word in (one address or all), or done */
++	enum { ee_idle, ee_command, ee_read, ee_write, ee_write_all, ee_done };
++
++	unsigned char eeprom_[eeprom_bytes];
++	unsigned short accelX_, accelY_;     /* the sensor now */
++	unsigned short latchX_, latchY_;     /* what the game reads */
++	unsigned short shift_;               /* bits coming in */
++	unsigned short outWord_;             /* bits going out, top bit next */
++	unsigned char eeState_, bits_, addr_, outBits_;
++	bool active_, enable_[2], armed_;
++	bool cs_, clk_, di_, do_, writeEnable_;
++
++	void resetRegisters();
++	unsigned word(unsigned a) const { return eeprom_[2 * a] | eeprom_[2 * a + 1] << 8; }
++	void setWord(unsigned a, unsigned v) { eeprom_[2 * a] = v & 0xff; eeprom_[2 * a + 1] = v >> 8 & 0xff; }
++	void eepromPins(unsigned data);
++	void eepromClock(bool di);
++	void eepromCommand();
++};
++
++}
++
++#endif
+diff -ruN a/libgambatte/src/savestate.h b/libgambatte/src/savestate.h
+--- a/libgambatte/src/savestate.h
++++ b/libgambatte/src/savestate.h
+@@ -222,6 +222,15 @@
+ 		unsigned char modeflag;
+ 		bool irReceivingPulse;
+ 	} huc3;
++
++	/* MBC7 cartridges: the chip's registers then its EEPROM (Mbc7Chip, mem/mbc7.cpp). present
++	 * tells a state with the chip in it from one made before it was, and a reset from both. */
++	struct MBC7 {
++		enum { absent = 0, full = 1, power_on = 2 };
++		MBC7() : present(absent) {}
++		unsigned char present;
++		unsigned char data[16 + 256];
++	} mbc7;
+ };
+ 
+ }
+diff -ruN a/libgambatte/src/statesaver.cpp b/libgambatte/src/statesaver.cpp
+--- a/libgambatte/src/statesaver.cpp
++++ b/libgambatte/src/statesaver.cpp
+@@ -478,6 +478,8 @@
+ 	{ static const char label[] = { h,NO3,m,f,     NUL }; ADD(huc3.modeflag); }
+ 	{ static const char label[] = { h,NO3,i,r,c,y, NUL }; ADD(huc3.irBaseCycle); }
+ 	{ static const char label[] = { h,NO3,i,r,a,c, NUL }; ADD(huc3.irReceivingPulse); }
++	{ static const char label[] = { m,b,c,NO7,p,r, NUL }; ADD(mbc7.present); }
++	{ static const char label[] = { m,b,c,NO7,d,a,t, NUL }; ADDARRAY(mbc7.data); }
+ 	
+ #undef ADD
+ #undef ADDPTR
