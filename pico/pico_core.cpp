@@ -48,7 +48,17 @@ void     gbc_set_color_correction(int enable);
 void     gbc_set_color_correction_mode(unsigned mode);
 void     gbc_set_dark_filter(unsigned level);
 int      gbc_has_accelerometer(void);
+int      gbc_link_open(const void *rom, unsigned size, unsigned flags);
+int      gbc_link_on(void);
+void     gbc_link_view(unsigned m);
+void     gbc_link_select(unsigned m);
+void     gbc_link_clock(unsigned m, long offset);
+unsigned gbc_link_stat(unsigned what);
+unsigned gbc_link_state_size(void);
+void     gbc_link_state_save(void *buf);
+int      gbc_link_state_load(const void *buf, unsigned size);
 int      gbc_rumble(void);
+void     gbc_get_memory(struct pico_core_memory *out);
 void     gbc_set_accelerometer(unsigned x, unsigned y);
 }
 
@@ -154,9 +164,21 @@ extern "C" unsigned gbc_read_buttons(void)      /* gambatte LkInput -> LK pad re
 {
 	return s_imp && s_imp->read_buttons ? s_imp->read_buttons() : 0;
 }
+/* Netplay: the LK hands every controller port its player's buttons (port 0 the first machine,
+ * port 1 the linked one). Without it port 0 is the console's own pad and port 1 is idle. */
+static unsigned (*s_pad_reader)(unsigned port);
+extern "C" void gbc_set_pad_reader(unsigned (*fn)(unsigned port)) { s_pad_reader = fn; }
+extern "C" unsigned gbc_read_port(unsigned port)
+{
+	if (s_pad_reader)
+		return s_pad_reader(port);
+	return port == 0 ? gbc_read_buttons() : 0;
+}
+extern "C" long gbc_link_clock_adjust(void);   /* pico_bridge.cpp */
 extern "C" long time(long *t)                   /* cart RTC clock */
 {
 	long v = s_imp && s_imp->host_time ? s_imp->host_time() : 0;
+	v += gbc_link_clock_adjust();   /* linked: the running machine's own console's clock */
 	if (t) *t = v;
 	return v;
 }
@@ -164,7 +186,7 @@ extern "C" int atexit(void (*)(void)) { return 0; }   /* no teardown in the blob
 
 static const struct gbc_core_exports g_exports = {
 	GBC_CORE_ABI_MAGIC,
-	GBC_CORE_ABI_V2,
+	GBC_CORE_ABI_V4,
 	gbc_heap_init,
 	gbc_create,
 	gbc_load,
@@ -189,6 +211,17 @@ static const struct gbc_core_exports g_exports = {
 	gbc_motion_wanted,
 	gbc_set_motion,
 	gbc_rumble,
+	gbc_set_pad_reader,
+	gbc_link_open,
+	gbc_link_on,
+	gbc_link_view,
+	gbc_link_select,
+	gbc_link_stat,
+	gbc_link_state_size,
+	gbc_link_state_save,
+	gbc_link_state_load,
+	gbc_link_clock,
+	gbc_get_memory,
 };
 
 /* Blob entry: LK calls this with the imports table and gets the export table back. */

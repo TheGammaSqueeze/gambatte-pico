@@ -1,0 +1,21 @@
+gambatte-pico patch to upstream gambatte (libgambatte/src/video.cpp), GPL-2.0 like the file it
+changes. Copyright (c) 2026 TheGammaSqueeze. Applied by build.sh to a copy in out/src.
+
+A save state of an original Game Boy (DMG) game carried 24 bytes nobody wrote: the CGB colour
+palette field is only filled for colour games, so the rest of the state was whatever the stack
+held there. Two consoles saving the same game state got different bytes, and the netplay check,
+which compares the consoles' states, saw them part although the games were identical. The field
+is now cleared for DMG games (it is only read back for colour ones).
+
+diff -ruN a/libgambatte/src/video.cpp b/libgambatte/src/video.cpp
+--- a/libgambatte/src/video.cpp	2026-11-16 21:35:58.061156228 +0000
++++ b/libgambatte/src/video.cpp	2026-11-16 21:35:58.083156228 +0000
+@@ -87,6 +87,8 @@
+    
+    if (isCgb())
+       std::memcpy(state.ppu.dmgPalette, dmgColorsGBC_, 8 * 3);
++   else
++      std::memset(state.ppu.dmgPalette, 0, 8 * 3);
+    
+ 
+    lycIrq_.saveState(state);

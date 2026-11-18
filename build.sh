@@ -50,7 +50,7 @@ CORE=$OUT/src/libgambatte
 INC="-I$CORE/src -I$CORE/include -I$OUT/src/common -I$CORE/libretro -I$CORE/libretro-common/include"
 ARCH="-march=armv7-a -mfloat-abi=soft -mthumb-interwork -ffreestanding"
 CXXFLAGS="$ARCH -fno-exceptions -fno-rtti -fno-threadsafe-statics -fno-use-cxa-atexit -fno-short-enums \
-	-mno-unaligned-access -Os -fno-common -D__LIBRETRO__ -DVIDEO_RGB565 $INC"
+	-mno-unaligned-access -Os -fno-common -D__LIBRETRO__ -DVIDEO_RGB565 -DHAVE_NETWORK $INC"
 # the C runtime is built -fno-builtin, as any memcpy/memset must be: GCC otherwise turns their
 # byte loops back into calls to themselves
 CFLAGS="$ARCH -fno-builtin -fno-common -fno-short-enums -Os"
