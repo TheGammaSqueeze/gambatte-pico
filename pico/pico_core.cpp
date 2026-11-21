@@ -59,6 +59,8 @@ void     gbc_link_state_save(void *buf);
 int      gbc_link_state_load(const void *buf, unsigned size);
 int      gbc_rumble(void);
 void     gbc_get_memory(struct pico_core_memory *out);
+void     gbc_cheat_reset(void);
+int      gbc_cheat_add(const char *code);
 void     gbc_set_accelerometer(unsigned x, unsigned y);
 }
 
@@ -186,7 +188,7 @@ extern "C" int atexit(void (*)(void)) { return 0; }   /* no teardown in the blob
 
 static const struct gbc_core_exports g_exports = {
 	GBC_CORE_ABI_MAGIC,
-	GBC_CORE_ABI_V4,
+	GBC_CORE_ABI_V5,
 	gbc_heap_init,
 	gbc_create,
 	gbc_load,
@@ -222,6 +224,8 @@ static const struct gbc_core_exports g_exports = {
 	gbc_link_state_load,
 	gbc_link_clock,
 	gbc_get_memory,
+	gbc_cheat_reset,
+	gbc_cheat_add,
 };
 
 /* Blob entry: LK calls this with the imports table and gets the export table back. */

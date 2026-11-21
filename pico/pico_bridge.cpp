@@ -429,3 +429,63 @@ extern "C" int gbc_link_state_load(const void *buf, unsigned size)
 	}
 	return 0;
 }
+
+/* ---- cheat codes (V5) ----
+ * One cheat's code as a RetroArch .cht file gives it: one or more codes joined by '+', spaces,
+ * commas or ';'. Each is a Game Genie code (HHH-HHH, or HHH-HHH-HHH with the compare byte), which
+ * changes the ROM where the cartridge maps it, or a GameShark code (8 hex digits), written into
+ * memory at each vertical blank (patches/0004). gambatte adds them to the ones in force; a new load
+ * drops them. A text with any code that is neither is refused whole. */
+static int cheat_hex(char c)
+{
+	return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+}
+static int cheat_is_genie(const char *c, size_t n)
+{
+	if (n != 7 && n != 11) return 0;
+	for (size_t i = 0; i < n; i++)
+		if ((i == 3 || i == 7) ? c[i] != '-' : !cheat_hex(c[i])) return 0;
+	return 1;
+}
+static int cheat_is_shark(const char *c, size_t n)
+{
+	if (n != 8) return 0;
+	for (size_t i = 0; i < n; i++)
+		if (!cheat_hex(c[i])) return 0;
+	return 1;
+}
+static int cheat_sep(char c) { return c == '+' || c == ' ' || c == ',' || c == ';' || c == '\t' || c == '\r' || c == '\n'; }
+
+extern "C" void gbc_cheat_reset(void)
+{
+	if (g_gb) g_gb->clearCheats();
+}
+
+extern "C" int gbc_cheat_add(const char *code)
+{
+	if (!g_gb || !code) return -1;
+	/* every code checked first, so a text with one bad code changes nothing */
+	unsigned codes = 0;
+	for (const char *p = code; *p;) {
+		while (*p && cheat_sep(*p)) p++;
+		const char *e = p;
+		while (*e && !cheat_sep(*e)) e++;
+		size_t n = (size_t)(e - p);
+		if (!n) break;
+		if (!cheat_is_genie(p, n) && !cheat_is_shark(p, n)) return -1;
+		codes++;
+		p = e;
+	}
+	if (!codes) return -1;
+	for (const char *p = code; *p;) {
+		while (*p && cheat_sep(*p)) p++;
+		const char *e = p;
+		while (*e && !cheat_sep(*e)) e++;
+		size_t n = (size_t)(e - p);
+		if (!n) break;
+		if (cheat_is_genie(p, n)) g_gb->addGameGenie(p, (unsigned) n);
+		else g_gb->addGameShark(p);
+		p = e;
+	}
+	return 0;
+}

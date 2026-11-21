@@ -1,0 +1,129 @@
+gambatte-pico patch to upstream gambatte (libgambatte/include/gambatte.h, libgambatte/src/gambatte.cpp,
+gambatte-memory.h, interrupter.h, interrupter.cpp, mem/cartridge.h and mem/cartridge.cpp), GPL-2.0
+like the files it changes. Copyright (c) 2026 TheGammaSqueeze. Applied by build.sh to a copy in out/src.
+
+Cheat codes for the LK, after 0001 left the std::string setters empty: a Game Genie code and a
+GameShark code each come in as plain characters (addGameGenie, addGameShark), decoded by gambatte's
+own code for them, so no std::string is built. The caller (pico/pico_bridge.cpp) has checked each
+code's form and split a cheat into its codes.
+
+diff -ruN a/libgambatte/include/gambatte.h b/libgambatte/include/gambatte.h
+--- a/libgambatte/include/gambatte.h
++++ b/libgambatte/include/gambatte.h
+@@ -143,6 +143,11 @@
+    void setGameShark(const std::string &codes);
+ 
+    void clearCheats();
++
++   /** Adds one Game Genie code (HHH-HHH or HHH-HHH-HHH) or one GameShark code (8 hex digits) to
++    * the ones in force, from a plain character buffer (the LK build has no std::string library). */
++   void addGameGenie(const char *code, unsigned length);
++   void addGameShark(const char *code);
+    
+ #ifdef __LIBRETRO__
+    void *vram_ptr() const;
+diff -ruN a/libgambatte/src/gambatte-memory.h b/libgambatte/src/gambatte-memory.h
+--- a/libgambatte/src/gambatte-memory.h
++++ b/libgambatte/src/gambatte-memory.h
+@@ -155,6 +155,8 @@
+ 
+ 	void setGameGenie(std::string const &codes) { cart_.setGameGenie(codes); }
+ 	void setGameShark(std::string const &codes) { interrupter_.setGameShark(codes); }
++	void addGameGenie(const char *code, unsigned length) { cart_.addGameGenie(code, length); }
++	void addGameShark(const char *code) { interrupter_.addGameShark(code); }
+ #ifdef HAVE_NETWORK
+ 	void checkSerial(unsigned long cc);
+ #endif
+diff -ruN a/libgambatte/src/gambatte.cpp b/libgambatte/src/gambatte.cpp
+--- a/libgambatte/src/gambatte.cpp
++++ b/libgambatte/src/gambatte.cpp
+@@ -199,6 +199,14 @@
+  p_->cpu.setGameShark(codes);
+ }
+ 
++void GB::addGameGenie(const char *code, unsigned length) {
++ p_->cpu.mem_.addGameGenie(code, length);
++}
++
++void GB::addGameShark(const char *code) {
++ p_->cpu.mem_.addGameShark(code);
++}
++
+ void GB::clearCheats() {
+  p_->cpu.clearCheats();
+ }
+diff -ruN a/libgambatte/src/interrupter.cpp b/libgambatte/src/interrupter.cpp
+--- a/libgambatte/src/interrupter.cpp
++++ b/libgambatte/src/interrupter.cpp
+@@ -57,6 +57,18 @@
+ 	/* cheats unused in the LK build (avoids std::string library deps) */
+ }
+ 
++/* One code's 8 hex digits: TTVVLLHH, the type, the value and the address low byte first. */
++void Interrupter::addGameShark(const char *code) {
++	GsCode gs;
++	gs.type  =  asHex(code[0]) << 4 | asHex(code[1]);
++	gs.value = (asHex(code[2]) << 4 | asHex(code[3])) & 0xFF;
++	gs.address = (  asHex(code[4]) << 4
++	              | asHex(code[5])
++	              | asHex(code[6]) << 12
++	              | asHex(code[7]) <<  8) & 0xFFFF;
++	gsCodes_.push_back(gs);
++}
++
+ void Interrupter::clearCheats() {
+ 	gsCodes_.clear();
+ }
+diff -ruN a/libgambatte/src/interrupter.h b/libgambatte/src/interrupter.h
+--- a/libgambatte/src/interrupter.h
++++ b/libgambatte/src/interrupter.h
+@@ -37,6 +37,7 @@
+ 	Interrupter(unsigned short &sp, unsigned short &pc);
+ 	unsigned long interrupt(unsigned address, unsigned long cycleCounter, Memory &memory);
+ 	void setGameShark(std::string const &codes);
++	void addGameShark(const char *code);
+ 	void clearCheats();
+ 
+ private:
+diff -ruN a/libgambatte/src/mem/cartridge.cpp b/libgambatte/src/mem/cartridge.cpp
+--- a/libgambatte/src/mem/cartridge.cpp
++++ b/libgambatte/src/mem/cartridge.cpp
+@@ -1080,15 +1080,15 @@
+       return c - '0';
+    }
+ 
+-   void Cartridge::applyGameGenie(const std::string &code)
++   void Cartridge::applyGameGenie(const char *code, unsigned length)
+    {
+-      if (6 < code.length())
++      if (6 < length)
+       {
+          const unsigned val = (asHex(code[0]) << 4 | asHex(code[1])) & 0xFF;
+          const unsigned addr = (asHex(code[2]) << 8 | asHex(code[4]) << 4 | asHex(code[5]) | (asHex(code[6]) ^ 0xF) << 12) & 0x7FFF;
+          unsigned cmp = 0xFFFF;
+ 
+-         if (10 < code.length())
++         if (10 < length)
+          {
+             cmp = (asHex(code[8]) << 4 | asHex(code[10])) ^ 0xFF;
+             cmp = ((cmp >> 2 | cmp << 6) ^ 0x45) & 0xFF;
+diff -ruN a/libgambatte/src/mem/cartridge.h b/libgambatte/src/mem/cartridge.h
+--- a/libgambatte/src/mem/cartridge.h
++++ b/libgambatte/src/mem/cartridge.h
+@@ -148,6 +148,7 @@
+          void setSaveDir(const std::string &dir);
+          int loadROM(const void *romdata, unsigned int romsize, unsigned int forceModel, bool multicartCompat);
+          void setGameGenie(const std::string &codes);
++         void addGameGenie(const char *code, unsigned length) { applyGameGenie(code, length); }
+          void clearCheats();
+ 
+          bool isHuC3() const { return huc3_.isHuC3(); }
+@@ -226,7 +227,7 @@
+ 
+          std::vector<AddrData> ggUndoList_;
+ 
+-         void applyGameGenie(const std::string &code);
++         void applyGameGenie(const char *code, unsigned length);
+    };
+ 
+ }

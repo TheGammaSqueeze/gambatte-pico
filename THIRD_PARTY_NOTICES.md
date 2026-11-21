@@ -14,8 +14,7 @@ notices to be kept.
   port by the libretro team and its contributors. Licensed under the GNU General Public License
   version 2 as published by the Free Software Foundation (upstream `COPYING`, the same text as
   `LICENSE` here).
-- Compiled: the emulator library `libgambatte/src` (with `patches/0001-no-cheat-code-parsing.patch`
-  applied), its headers in `libgambatte/include` and `common/`, `libgambatte/libretro/gambatte_log.h`
+- Compiled: the emulator library `libgambatte/src` (with the patches in `patches/` applied), its headers in `libgambatte/include` and `common/`, `libgambatte/libretro/gambatte_log.h`
   and the palette catalogue `libgambatte/libretro/gbcpalettes.h`. The libretro frontend
   (`libgambatte/libretro/libretro.cpp` and the rest of that folder) is not built.
 - The palette catalogue holds the Game Boy, Game Boy Color and Super Game Boy palettes and two
