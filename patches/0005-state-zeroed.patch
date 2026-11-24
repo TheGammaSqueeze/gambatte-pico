@@ -1,0 +1,23 @@
+gambatte-pico patch to upstream gambatte (libgambatte/src/gambatte.cpp), GPL-2.0 like the file it
+changes. Copyright (c) 2026 TheGammaSqueeze. Applied by build.sh to a copy in out/src.
+
+A save state was gathered in a structure left as the stack had it, and only the fields the running
+cartridge and machine use are written: an MBC-less cartridge (Dr. Mario) never sets the RAM bank
+mode, so that byte of the state was the stack's leftovers. Two consoles saving the same machine got
+different bytes whenever their stacks differed (one had its in-game menu open), and the netplay
+check saw them part although the games were identical. The structure is now zeroed first, which
+covers every such field (0003 cleared one of them by hand).
+
+--- a/libgambatte/src/gambatte.cpp	2026-11-24 09:46:42.959564713 +0000
++++ b/libgambatte/src/gambatte.cpp	2026-11-24 09:46:42.977164712 +0000
+@@ -155,7 +155,9 @@
+ }
+ 
+ void GB::saveState(void *data) {
+-   SaveState state;
++   /* zeroed first: what the cartridge, the sound or the video leave unwritten (an MBC-less
++    * cartridge has no RAM bank mode) is 0, not the stack's leftovers */
++   SaveState state = SaveState();
+    p_->cpu.setStatePtrs(state);
+    p_->cpu.saveState(state);
+    StateSaver::saveState(state, data);
